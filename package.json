@@ -9,13 +9,16 @@
   "categories": [
     "Other"
   ],
-  "activationEvents": [],
+  "activationEvents": [
+    "onLanguage:javascript",
+    "onLanguage:typescript"
+  ],
   "main": "./extension.js",
   "contributes": {
     "commands": [
       {
-        "command": "consolelog-suggest.helloWorld",
-        "title": "Hello World"
+        "command": "extension.formatWithPrettier",
+        "title": "Format with Prettier"
       }
     ]
   },
