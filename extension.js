@@ -26,34 +26,36 @@ function activate(context) {
 
 				// ファイル内のテキストを文字列としてすべて取得
 				const text = document.getText();
-				// 文章を列ごとに分割し配列に保存
-				const lines = text.split("\n");
 
-
+				let formattedText, lines;
+				try {
+					formattedText = await prettier.format(text, {
+						parser: 'babel',
+						singleQuote: true,
+						semi: true,
+						tabWidth: 2,
+						bracketSpacing: true,
+					});
+					// 整形した文章を列ごとに分割し配列に保存
+					lines = formattedText.trim().split('\n');
+				} catch (err) {
+					console.warn(`Prettier failed on full text\n→ ${err.message}`);
+					// fallbackとして元のtextを使う（必要なら）
+					lines = text.trim().split('\n');
+				}
 
 				// globalの行をすべて入れる配列
 				let global = [];
 				// functionの名前ごとにオブジェクトを作り、startとendの行数を記録
 				let functions = [];
 				// 現在cursorがいる位置
-				let nowLine = vscode.window.activeTextEditor.selection.active.line + 1;
+				let nowLine = vscode.window.activeTextEditor.selection.active.line;
 
 				// 今いる行までのglobalとfunctionで配列分けする
-				for (let k = 1; k <= nowLine; k++) {
-					let line = lines[k - 1].trim();
-					// /**/による複数行コメントアウトの場合、globalに入れない
-					if (line.includes("/*")) {
-						let count = 1;
-						k++;
-						while (count !== 0) {
-							if (k > lines.length - 1 || !lines[k]) break;
-							line = lines[k - 1].trim();
-							if (line.includes("*/")) count = 0
-							if (count !== 0) k++;
-						}
-					}
+				for (let k = 0; k < nowLine; k++) {
+					let line = lines[k];
 					// functionがある場合、配列functionsにobjectとして名前始まり行終わり行を追加
-					if (line.split(' ')[0] === "function") {
+					if (line.startsWith("function")) {
 						let functionObject = {};
 						// spaceで区切ったものの1番目を"("で区切った0番目を配列名とする
 						let functionName = line.split(' ')[1].split('(')[0].replace(/\s+/g, "");
@@ -62,18 +64,23 @@ function activate(context) {
 						// {}の個数が合うまでfunctionとして認識させる
 						let count = 1;
 						k++;
-						while (count !== 0) {
-							if (k > lines.length - 1 || !lines[k]) break;
-							line = lines[k - 1].trim();
+						while (true) {
+							if (k > lines.length - 1) break;
+							line = lines[k];
 							let words = line.split(' ');
 							for (let word of words) {
-								if (word === "{") count++;
-								if (word === "}") count--;
+								if (word.includes("{")) count++;
+								if (word.includes("}")) count--;
 							}
-							if (count !== 0) k++;
+							// {}の数が一致したもしくはカーソルの行を超えたら、そこまでがfunctionだったということにする
+							if (count === 0 || !(k < nowLine)) {
+								functionObject.end = k;
+								functions.push(functionObject);
+								break;
+							} else {
+								k++;
+							}
 						}
-						functionObject.end = k
-						functions.push(functionObject)
 					} else {
 						global.push(line)
 					}
@@ -94,34 +101,66 @@ function activate(context) {
 				let searchLines = []
 				searchLines = searchLines.concat(global)
 				if (nowFunction !== null) {
-					for (let k = nowFunction.start - 1; k < nowFunction.end; k++) {
-						if (k < nowLine) searchLines.push(lines[k].trim());
+					for (let k = nowFunction.start; k < nowFunction.end; k++) {
+						if (k < nowLine) searchLines.push(lines[k]);
 						if (k >= nowLine) break;
 					}
 				}
-				console.log(searchLines)
 
-				// prettierでsearchLinesを整形
-				searchLines = await Promise.all(
-					searchLines.map(async (line) => {
-						try {
-							// Prettierで以下の通り整形
-							const formatted = await prettier.format(line, {
-								parser: 'babel',           // JavaScriptコードとして解釈
-								singleQuote: true,         // 文字列は ' で囲む
-								semi: true,                // セミコロンを付ける
-								tabWidth: 2,               // インデント幅はスペース2つ分
-								bracketSpacing: true       // オブジェクトの { } 内にスペースを入れる（例: { a: 1 }）
-							});
-							// 整形後の文字列を返す（両端の改行等を除去）
-							return formatted.trim();
-						} catch (err) {
-							// 整形に失敗した場合でもクラッシュしないようにする
-							console.warn(`Prettier failed on line: ${line}\n→ ${err.message}`);
-							return line; // 元の行をそのまま返す
+				// コメントアウトは除く
+				let k = 0;
+				while (k < searchLines.length) {
+					let line = searchLines[k];
+					// 複数行コメントアウトの場合
+					if (line.includes("/*")) {
+						// 始めのコメントアウトが文の初めか文中かで場合分け
+						if (line.startsWith("/*")) {
+							searchLines.splice(k, 1);
+							if (!(k < searchLines.length)) break;
+							line = searchLines[k];
+						} else {
+							searchLines[k] = searchLines[k].split("/*")[0];
+							k++;
+							if (!(k < searchLines.length)) break;
+							line = searchLines[k];
 						}
-					})
-				);
+						while (true) {
+							if (line.includes("*/")) {
+								if (line.endsWith("*/")) {
+									searchLines.splice(k, 1);
+									if (!(k < searchLines.length)) break;
+									line = searchLines[k];
+									break;
+								} else {
+									searchLines[k] = searchLines[k].split("*/")[1];
+									break;
+								}
+							} else {
+								searchLines.splice(k, 1);
+								if (!(k < searchLines.length)) break;
+								line = searchLines[k];
+							}
+						}
+						if (!(k < searchLines.length)) break;
+						continue;
+					}
+
+					// スラッシュのコメントアウト後はその文を含めない
+					if (line.includes("//")) {
+						if (line.startsWith("//")) {
+							searchLines.splice(k, 1);
+							if (!(k < searchLines.length)) break;
+							line = searchLines[k];
+						} else {
+							searchLines[k] = searchLines[k].split("//")[0];
+						}
+						continue;
+					}
+
+					k++;
+					if (!(k < searchLines.length)) break;
+				}
+
 				console.log(searchLines)
 
 				// suggestするべき全ての変数が入った配列
@@ -129,21 +168,19 @@ function activate(context) {
 				for (let k = 0; k < searchLines.length; k++) {
 					// 長さが0=空の行だったらcontinue
 					if (searchLines[k].length === 0) continue;
-					// インデント揃えによる空白を除外
-					let line = searchLines[k].trim()
+					let line = searchLines[k].trim();
 					// 関数の宣言から始まった文でなければcontinue
 					if (!["const", "let", "var"].includes(line.split(' ')[0])) continue;
 
 					// =の後に{を含まないなら変数、含むならobjectと認識させる
 					if (!line.includes('{')) {
 						// 単語をspaceで区切り、2つ目の単語=宣言後の単語=変数名をvariableに保存
-						let variable = line.split(' ')[1].trim();
+						let variable = line.split(' ')[1];
 						// 文末がセミコロンだったら取り除く
-							variable = variable.split(";")[0]
-						// 変数を初期化している際にも変数のみを読ませる
-						if (variable.includes('=')) variable = variable.split('=')[0];
+						variable = variable.split(";")[0]
 						itemWords.push(variable);
 					} else {	// object
+						console.log("a")
 						// object名と要素名を入れた配列
 						let nowObject = [];
 						// count="{" - "}"の個数
@@ -151,7 +188,7 @@ function activate(context) {
 						while (count !== 0) {
 							// 1回目はwhileから抜けないようにcountを設定
 							if (count === null) count = 0;
-							let phrases = line.trim().split(' ');
+							let phrases = line.split(' ');
 							for (let l = 0; l < phrases.length; l++) {
 								// ここでは{が1つの場合のみ考えている
 								if (phrases[l].includes('{')) {
@@ -165,11 +202,12 @@ function activate(context) {
 							}
 							if (count !== 0) {
 								k++;
+								if (!(k < searchLines.length)) break;
 								// 長さが0=空の行だったら行が出るまで足し続ける
 								while (searchLines[k].length === 0) k++;
-								// インデント揃えによる空白を除外
-								line = searchLines[k].trim()
+								line = searchLines[k].trim();
 							}
+							console.log("count:",count)
 						}
 						// objectの一番低階層の変数も表示できるようにする
 						itemWords.push(nowObject[0])
@@ -180,6 +218,8 @@ function activate(context) {
 						}
 					}
 				}
+
+				console.log("itemWords:", itemWords)
 
 				// 現在の入力を取得
 				const nowWord = linePrefix.split('(')[1]
