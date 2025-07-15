@@ -207,7 +207,6 @@ function activate(context) {
 								while (searchLines[k].length === 0) k++;
 								line = searchLines[k].trim();
 							}
-							console.log("count:",count)
 						}
 						// objectの一番低階層の変数も表示できるようにする
 						itemWords.push(nowObject[0])
