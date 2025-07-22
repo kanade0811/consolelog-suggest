@@ -107,10 +107,15 @@ function activate(context) {
 					}
 				}
 
-				// コメントアウトは除く
+				// 長さが0の行、コメントアウトは除く
 				let k = 0;
 				while (k < searchLines.length) {
 					let line = searchLines[k];
+					if (line.length == 0) {
+						searchLines.splice(k, 1);
+						if (!(k < searchLines.length)) break;
+						continue;
+					}
 					// 複数行コメントアウトの場合
 					if (line.includes("/*")) {
 						// 始めのコメントアウトが文の初めか文中かで場合分け
@@ -161,8 +166,6 @@ function activate(context) {
 					if (!(k < searchLines.length)) break;
 				}
 
-				console.log(searchLines)
-
 				// suggestするべき全ての変数が入った配列
 				const itemWords = [];
 				for (let k = 0; k < searchLines.length; k++) {
@@ -180,23 +183,38 @@ function activate(context) {
 						variable = variable.split(";")[0]
 						itemWords.push(variable);
 					} else {	// object
-						console.log("a")
 						// object名と要素名を入れた配列
 						let nowObject = [];
 						// count="{" - "}"の個数
 						let count = null;
 						while (count !== 0) {
-							// 1回目はwhileから抜けないようにcountを設定
 							if (count === null) count = 0;
 							let phrases = line.split(' ');
 							for (let l = 0; l < phrases.length; l++) {
-								// ここでは{が1つの場合のみ考えている
-								if (phrases[l].includes('{')) {
-									nowObject[0] = phrases[l - 2];
-									count++;
-								} else if (phrases[l].includes(':')) {
-									nowObject.push(phrases[l].split(":")[0])
-								} else if (phrases[l].includes('}')) {
+								let word = phrases[l];
+								if (l + 2 < phrases.length) {
+									// objectの開始位置の処理
+									if (phrases[l + 1] === "=" && phrases[l + 2] === "{") {
+										// variable = {
+										count++;
+										// 最初は既に配列がある為配列を追加しない
+										// 最初のobject名を追加
+										nowObject.push(word)
+									}
+								}
+								if (l + 1 < phrases.length) {
+									if (word !== "=" && phrases[l + 1] === "{") {
+										// variable: {
+										count++;
+										colon(nowObject, count - 2).push([]);
+									}
+								}
+								if (word.includes(':')) {
+									// 今の配列に対応した位置にinNowObjectへ今の変数名を追加
+									let newWord = word.split(":")[0];
+									colon(nowObject, count - 1).push(newWord);
+								}
+								if (word.includes('}')) {
 									count--;
 								}
 							}
@@ -208,17 +226,13 @@ function activate(context) {
 								line = searchLines[k].trim();
 							}
 						}
-						// objectの一番低階層の変数も表示できるようにする
-						itemWords.push(nowObject[0])
-						// 要素の最深部まで含めたものを変数として表示
-						for (let l = 1; l < nowObject.length; l++) {
-							let word = nowObject[0] + "." + nowObject[l]
-							itemWords.push(word)
+						// 配列の細分化をし、itemWordsにpushする
+						let nowObjectVariables = makeWords(nowObject);
+						for (let l = 0; l < nowObjectVariables.length; l++) {
+							itemWords.push(nowObjectVariables[l]);
 						}
 					}
 				}
-
-				console.log("itemWords:", itemWords)
 
 				// 現在の入力を取得
 				const nowWord = linePrefix.split('(')[1]
@@ -296,3 +310,42 @@ module.exports = {
 	activate,
 	deactivate
 };
+
+// 最後から数え指定の深さにある配列に要素を追加
+function colon(array, depth) {
+	// 地のobjectならそのままの配列を返す
+	if (depth === 0) return array;
+	// 深さが指定されている場合、特定の深さに移動
+	let nowArray = array;
+	for (let k = 0; k < depth; k++) {
+		nowArray = nowArray.at(-1)
+	}
+	return nowArray;
+}
+
+function makeWords(array) {
+	for (let k = 0; k < array.length; k++) {
+		// もし要素に配列(n次のobject)があるならば、要素を結合して地の配列に返す
+		if (Array.isArray(array[k])) {
+			// 結合した配列を新しい配列として作成
+			let newArray = makeWords(array[k]);
+			// 元あった深いobjectの配列を削除
+			array.splice(k, 1)
+			// 作った配列のすべての要素を追加
+			for (let l = 0; l < newArray.length; l++) {
+				array.splice(k + l, 0, newArray[l]);
+			}
+			// 追加した配列の文だけ今いる検索位置を後ろにずらす
+			k += newArray.length;
+			// 次の配列を検索する
+			continue;
+		}
+	}
+	// 地の配列になったら0番目とそれ以降をそれぞれ結合
+	for (let l = 1; l < array.length; l++) {
+		let word = array[0] + "." + array[l];
+		array.splice(l, 1, word);
+	}
+	// 返り値でnowObjectVariablesを設定したり再帰させたりする
+	return array;
+}
